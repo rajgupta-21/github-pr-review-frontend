@@ -34,3 +34,19 @@ export function initials(name?: string | null): string {
 export function pluralize(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
+
+/**
+ * A duration in milliseconds as something readable: "31s", "2m 04s".
+ * Returns null for absent or zero values so callers can show their own
+ * placeholder rather than printing "0s".
+ */
+export function formatDuration(ms?: number | null): string | null {
+  if (!ms || ms < 0) return null;
+
+  const totalSeconds = Math.round(ms / 1000);
+  if (totalSeconds < 60) return `${totalSeconds}s`;
+
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
+}

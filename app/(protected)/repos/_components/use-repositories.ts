@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 
-import { connectRepo, getConnectedRepos, getGithubRepos } from "@/lib/api";
-import type { ConnectedRepo, GithubRepo } from "@/lib/types";
+import { connectRepo, getConnectedRepos, getGithubRepos, getRepoOverview } from "@/lib/api";
+import type { ConnectedRepo, GithubRepo, RepoOverviewEntry } from "@/lib/types";
 
 export function hasWorkflow(repo: ConnectedRepo) {
   return (repo.workflow?.nodes?.length ?? 0) > 0;
@@ -14,8 +14,13 @@ export function needsAttention(repo: ConnectedRepo) {
   return !hasWorkflow(repo) || !repo.webhookActive;
 }
 
+/*
+  The overview is fetched here, once, rather than by each table row. Each
+  row previously called /repo/pr-all for its own repository — one GitHub
+  round trip per row — and read scores from sessionStorage.
+*/
 function fetchLists() {
-  return Promise.allSettled([getConnectedRepos(), getGithubRepos()]);
+  return Promise.allSettled([getConnectedRepos(), getGithubRepos(), getRepoOverview()]);
 }
 
 export function useRepositories() {
@@ -24,17 +29,24 @@ export function useRepositories() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [githubError, setGithubError] = useState<string | null>(null);
+  const [overview, setOverview] = useState<Record<number, RepoOverviewEntry>>({});
   const [connecting, setConnecting] = useState<number | null>(null);
   const [connectError, setConnectError] = useState<string | null>(null);
 
   const apply = useCallback((result: Awaited<ReturnType<typeof fetchLists>>) => {
-    const [connectedResult, githubResult] = result;
+    const [connectedResult, githubResult, overviewResult] = result;
     setError(null);
     setGithubError(null);
-    if (connectedResult.status === "fulfilled") setConnected(connectedResult.value);
+    if (connectedResult.status === "fulfilled") setConnected(connectedResult.value as ConnectedRepo[]);
     else setError(connectedResult.reason?.message || "Could not load connected repositories");
-    if (githubResult.status === "fulfilled") setGithub(githubResult.value);
+    if (githubResult.status === "fulfilled") setGithub(githubResult.value as GithubRepo[]);
     else setGithubError(githubResult.reason?.message || "Could not reach GitHub");
+    // Health and findings are a bonus — the table still lists repos without them
+    if (overviewResult.status === "fulfilled") {
+      const byId: Record<number, RepoOverviewEntry> = {};
+      for (const entry of overviewResult.value as RepoOverviewEntry[]) byId[entry.repoId] = entry;
+      setOverview(byId);
+    }
     setLoading(false);
   }, []);
 
@@ -78,6 +90,7 @@ export function useRepositories() {
 
   return {
     connected,
+    overview,
     available,
     githubTotal: github.length,
     loading,

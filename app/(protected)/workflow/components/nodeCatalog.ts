@@ -61,6 +61,12 @@ export type NodeDefinition = {
   fields: FieldConfig[];
   /** exists in the UI but the backend does not run it yet */
   comingSoon?: boolean;
+  /*
+    What this node costs to run. A user cannot otherwise tell that adding
+    three review nodes means three model calls — three times the latency
+    and three times the bill.
+  */
+  cost?: string;
 };
 
 export const NODE_TYPE_ALIASES: Record<string, string> = {
@@ -153,6 +159,7 @@ const DEFINITIONS: NodeDefinition[] = [
     category: "Review",
     flowType: "aiReview",
     fn: "ai.reviewPullRequest",
+    cost: "~15s · 1 model call · reads the full diff",
     icon: Bot,
     description: "Fetches PR diffs and runs an AI review using your connected Groq model.",
     defaults: { model: "llama-3.3-70b-versatile", focusInstructions: "" },
@@ -180,6 +187,7 @@ const DEFINITIONS: NodeDefinition[] = [
     category: "Review",
     flowType: "securityScan",
     fn: "ai.securityScan",
+    cost: "~10s · 1 model call · security focus only",
     icon: Shield,
     description: "Runs an AI review focused on security vulnerabilities and unsafe patterns.",
     defaults: { minSeverity: "high", focusInstructions: "" },
@@ -201,6 +209,7 @@ const DEFINITIONS: NodeDefinition[] = [
     category: "Review",
     flowType: "securityScan",
     fn: "ai.performanceReview",
+    cost: "~10s · 1 model call · performance focus only",
     icon: Zap,
     description: "Runs an AI review focused on performance, memory, and scalability.",
     defaults: { focusInstructions: "" },
@@ -221,6 +230,7 @@ const DEFINITIONS: NodeDefinition[] = [
     category: "Action",
     flowType: "action",
     fn: "github.commentPullRequest",
+    cost: "Posts publicly on the pull request",
     icon: MessageSquare,
     description:
       "Posts the AI review as a comment on the pull request. Runs a review first if none exists.",
@@ -237,6 +247,7 @@ const DEFINITIONS: NodeDefinition[] = [
     category: "Action",
     flowType: "action",
     fn: "github.approvePullRequest",
+    cost: "Submits an approving review as you",
     icon: Check,
     description:
       "Approves the pull request on GitHub. Skips approval if the review recommends changes.",
@@ -256,6 +267,7 @@ const DEFINITIONS: NodeDefinition[] = [
     category: "Action",
     flowType: "action",
     fn: "notification.slack",
+    cost: "Not sent yet — logged to the server only",
     icon: Bell,
     description:
       "Sends a Slack notification with the review summary. The backend only logs it for now.",

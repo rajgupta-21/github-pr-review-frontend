@@ -282,7 +282,7 @@ export default function RepositoriesPage() {
             )}
           </div>
         ) : (
-          <ConnectedTable repos={connectedRows} />
+          <ConnectedTable repos={connectedRows} overview={repos.overview} />
         )}
       </div>
 

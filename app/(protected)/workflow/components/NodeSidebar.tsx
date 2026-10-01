@@ -3,16 +3,27 @@
 import { Search } from "lucide-react";
 import { useState } from "react";
 
+import { Tooltip } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 import { CATEGORY_STYLE, PALETTE } from "./nodeCatalog";
 
-/* Left node palette. Items are dragged onto the canvas (application/reactflow). */
-export default function NodeSidebar() {
+/*
+  Left node palette.
+
+  Items were drag-only `div`s, so the canvas could not be built with a
+  keyboard at all and was fiddly on a trackpad. Each is now a real button
+  that adds the node on click or Enter, and still drags.
+
+  Each node also states what it costs: three review nodes means three
+  model calls, three times the latency and three times the bill, and
+  nothing said so.
+*/
+export default function NodeSidebar({ onAdd }: { onAdd?: (nodeType: string) => void }) {
   const [query, setQuery] = useState("");
   const needle = query.trim().toLowerCase();
 
-  const onDragStart = (event: React.DragEvent<HTMLDivElement>, nodeType: string) => {
+  const onDragStart = (event: React.DragEvent<HTMLElement>, nodeType: string) => {
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("application/reactflow", nodeType);
   };
@@ -68,25 +79,55 @@ export default function NodeSidebar() {
               {section.items.map((item) => {
                 const Icon = item.icon;
                 return (
-                  <div
+                  <Tooltip
                     key={item.type}
-                    draggable
-                    onDragStart={(event) => onDragStart(event, item.type)}
-                    title={item.description}
-                    className="flex cursor-grab items-center gap-2.5 rounded-md border border-line bg-surface px-[11px] py-2.5 transition-colors hover:border-violet-200 hover:bg-violet-50 active:cursor-grabbing"
+                    side="bottom"
+                    content={
+                      <>
+                        {item.description}
+                        {item.cost ? (
+                          <>
+                            <br />
+                            <span className="text-ink-muted">{item.cost}</span>
+                          </>
+                        ) : null}
+                        {item.comingSoon ? (
+                          <>
+                            <br />
+                            <span className="text-ink-muted">
+                              Not run by the server yet — adding it has no effect.
+                            </span>
+                          </>
+                        ) : null}
+                      </>
+                    }
                   >
-                    <Icon
-                      className={cn("size-4 shrink-0", CATEGORY_STYLE[item.category].icon)}
-                      strokeWidth={1.9}
-                      aria-hidden="true"
-                    />
-                    <span className="text-[13.5px] text-fg">{item.paletteLabel}</span>
-                    {item.comingSoon ? (
-                      <span className="ml-auto rounded-full bg-surface-hover px-2 py-px text-[10.5px] text-fg-subtle">
-                        Soon
-                      </span>
-                    ) : null}
-                  </div>
+                    <button
+                      type="button"
+                      draggable={!item.comingSoon}
+                      disabled={item.comingSoon}
+                      onDragStart={(event) => onDragStart(event, item.type)}
+                      onClick={() => onAdd?.(item.type)}
+                      className={cn(
+                        "flex w-full items-center gap-2.5 rounded-md border border-line bg-surface px-[11px] py-2.5 text-left transition-colors",
+                        item.comingSoon
+                          ? "cursor-not-allowed opacity-55"
+                          : "cursor-grab hover:border-violet-200 hover:bg-violet-50 active:cursor-grabbing",
+                      )}
+                    >
+                      <Icon
+                        className={cn("size-4 shrink-0", CATEGORY_STYLE[item.category].icon)}
+                        strokeWidth={1.9}
+                        aria-hidden="true"
+                      />
+                      <span className="text-[13.5px] text-fg">{item.paletteLabel}</span>
+                      {item.comingSoon ? (
+                        <span className="ml-auto rounded-full bg-surface-hover px-2 py-px text-[10.5px] text-fg-subtle">
+                          Soon
+                        </span>
+                      ) : null}
+                    </button>
+                  </Tooltip>
                 );
               })}
             </div>
@@ -95,7 +136,8 @@ export default function NodeSidebar() {
       </div>
 
       <p className="border-t border-line-soft px-4 py-3 text-xs leading-relaxed text-fg-subtle">
-        Drag a node onto the canvas, then connect handles to set the run order.
+        Click a node to add it, or drag it where you want it. Connect the handles to set
+        the run order.
       </p>
     </aside>
   );

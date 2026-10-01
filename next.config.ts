@@ -1,6 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  // Emits a self-contained server bundle for the Docker runtime stage
+  output: "standalone",
   /* config options here */
 };
 

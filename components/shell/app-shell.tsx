@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 
+import { CommandPalette } from "./command-palette";
 import { MobileBar, Rail, Sidebar } from "./sidebar";
 import { type Crumb, Topbar } from "./topbar";
 
@@ -23,6 +24,8 @@ export function SidebarShell({
 }) {
   return (
     <div className="flex min-h-screen bg-paper">
+      {/* ⌘K search, available on every signed-in screen */}
+      <CommandPalette />
       {variant === "sidebar" ? <Sidebar /> : <Rail />}
       <div className="flex min-w-0 flex-1 flex-col">
         <MobileBar />
@@ -50,6 +53,7 @@ export function TopbarShell({
 }) {
   return (
     <div className="flex min-h-screen flex-col bg-paper">
+      <CommandPalette />
       <Topbar crumbs={crumbs} actions={actions} />
       <div className={cn("flex min-h-0 min-w-0 flex-1 flex-col", className)}>{children}</div>
     </div>

@@ -1,10 +1,10 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-import { getPull, getRepo, runAiReview } from "@/lib/api";
-import { type CachedReview, writeCachedReview } from "@/lib/review";
-import type { ConnectedRepo, PullRequest } from "@/lib/types";
+import { getPull, getRepo, getStoredReview, runAiReview } from "@/lib/api";
+import { liveToView, type ReviewView, storedToView } from "@/lib/review";
+import type { ConnectedRepo, PullRequest, StoredReviewResponse } from "@/lib/types";
 
 type Keyed<T> = { key: string; data: T | null; error: string | null };
 
@@ -59,46 +59,57 @@ export function usePull(repo: ConnectedRepo | null, prNumber: string) {
 }
 
 /*
-  The last AI review for a PR. Reviews are not persisted by the backend, so the
-  result lives in sessionStorage (see lib/review) and is shared by the PR and
-  report screens. Read through useSyncExternalStore so SSR renders "no review".
+  The AI review for a pull request.
+
+  Previously this read sessionStorage, so closing the tab lost the review and
+  reopening the PR re-ran the model and billed again — and a teammate opening
+  the same PR saw nothing. The server stores every run, so the review is read
+  from the database and the model is only called when one is explicitly asked
+  for.
 */
-const REVIEW_EVENT = "mergegate:review-cache";
-
-function subscribe(callback: () => void) {
-  window.addEventListener(REVIEW_EVENT, callback);
-  window.addEventListener("storage", callback);
-  return () => {
-    window.removeEventListener(REVIEW_EVENT, callback);
-    window.removeEventListener("storage", callback);
-  };
-}
-
-function readRaw(repoId: string, prNumber: string) {
-  try {
-    return window.sessionStorage.getItem(`mergegate:review:${repoId}:${prNumber}`);
-  } catch {
-    return null;
-  }
-}
-
 export function useReview(repo: ConnectedRepo | null, repoId: string, prNumber: string) {
-  const raw = useSyncExternalStore(
-    subscribe,
-    () => readRaw(repoId, prNumber),
-    () => null,
-  );
-  const entry = useMemo<CachedReview | null>(() => {
-    if (!raw) return null;
-    try {
-      return JSON.parse(raw) as CachedReview;
-    } catch {
-      return null;
-    }
-  }, [raw]);
-
+  const [entry, setEntry] = useState<ReviewView | null>(null);
+  const [runTrace, setRunTrace] = useState<StoredReviewResponse["run"]>(null);
+  const [mergeGate, setMergeGate] = useState<StoredReviewResponse["mergeGate"]>("Critical");
+  const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const key = repo ? `${repo.owner}/${repo.name}#${prNumber}` : "";
+
+  // Load whatever is already on file. No model call, no charge.
+  useEffect(() => {
+    if (!repo) return;
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    getStoredReview(repo, prNumber)
+      .then((data) => {
+        if (cancelled) return;
+        if (data) {
+          setEntry(storedToView(data.review));
+          setRunTrace(data.run);
+          setMergeGate(data.mergeGate);
+        } else {
+          // Not an error — this PR simply has not been reviewed yet
+          setEntry(null);
+          setRunTrace(null);
+        }
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        setError(err instanceof Error ? err.message : "Could not load the review");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [repo, prNumber, key]);
 
   const run = useCallback(
     async (context?: string) => {
@@ -106,22 +117,41 @@ export function useReview(repo: ConnectedRepo | null, repoId: string, prNumber: 
       setRunning(true);
       setError(null);
       const started = performance.now();
+
       try {
         const review = await runAiReview(repo, prNumber, context);
-        writeCachedReview(repoId, prNumber, {
-          review,
-          ranAt: new Date().toISOString(),
-          durationMs: Math.round(performance.now() - started),
-        });
-        window.dispatchEvent(new Event(REVIEW_EVENT));
+
+        // Show the fresh result straight away...
+        setEntry(liveToView(review, Math.round(performance.now() - started)));
+
+        /*
+          ...then reconcile with what the server stored. The stored copy has
+          normalised scores and severities and carries the run trace, so the
+          screen ends up showing exactly what everyone else will see.
+        */
+        const stored = await getStoredReview(repo, prNumber);
+        if (stored) {
+          setEntry(storedToView(stored.review));
+          setRunTrace(stored.run);
+          setMergeGate(stored.mergeGate);
+        }
       } catch (err) {
         setError(err instanceof Error ? err.message : "The AI review failed");
       } finally {
         setRunning(false);
       }
     },
-    [repo, repoId, prNumber],
+    [repo, prNumber],
   );
 
-  return { entry, review: entry?.review ?? null, running, error, run };
+  return {
+    entry,
+    review: entry?.review ?? null,
+    runTrace,
+    mergeGate,
+    loading,
+    running,
+    error,
+    run,
+  };
 }

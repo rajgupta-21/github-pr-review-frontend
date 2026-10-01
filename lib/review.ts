@@ -1,4 +1,4 @@
-import type { ReviewFinding, ReviewResult, Severity } from "./types";
+import type { ReviewFinding, ReviewResult, Severity, StoredReview } from "./types";
 
 export const SEVERITIES: Severity[] = ["Critical", "High", "Medium", "Low"];
 
@@ -72,38 +72,128 @@ export function isApprove(review: ReviewResult | null | undefined) {
 }
 
 /*
-  Reviews are not persisted by the backend yet (POST /pr/ai-review just returns
-  the result), so the last review per PR is kept in sessionStorage. This lets
-  the PR screen and the report screen share one run instead of paying twice.
-*/
-const cacheKey = (repoId: number | string, prNumber: number | string) =>
-  `mergegate:review:${repoId}:${prNumber}`;
+  A review as the screens consume it.
 
-export interface CachedReview {
+  The server stores every review (scores already 0–100, severities already
+  normalised), so this is built from GET /pr/review/... rather than from
+  sessionStorage. Scores here are ALWAYS 0–100 — do not pass them through
+  toPercent() again, which would multiply a genuinely low score by ten.
+*/
+export interface ReviewView {
   review: ReviewResult;
   ranAt: string;
   durationMs?: number;
+  /** "stored" came from the database; "live" is a run that just finished. */
+  source: "stored" | "live";
+  trigger?: string;
+  counts?: { total: number; critical: number; high: number; medium: number; low: number };
+  fileDistribution?: { file: string; count: number }[];
 }
 
-export function readCachedReview(repoId: number | string, prNumber: number | string) {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.sessionStorage.getItem(cacheKey(repoId, prNumber));
-    return raw ? (JSON.parse(raw) as CachedReview) : null;
-  } catch {
-    return null;
-  }
+/**
+ * Turns the stored shape into the one the screens already render.
+ * Scores are left as they are because the server normalised them on write.
+ */
+export function storedToView(stored: StoredReview): ReviewView {
+  return {
+    review: {
+      summary: stored.summary ?? "",
+      overallScore: stored.overallScore,
+      securityScore: stored.securityScore,
+      performanceScore: stored.performanceScore,
+      qualityScore: stored.qualityScore,
+      findings: (stored.findings ?? []).map((finding) => ({
+        severity: finding.severity,
+        file: finding.file ?? "",
+        issue: finding.issue ?? "",
+        reason: finding.reason ?? "",
+        suggestion: finding.suggestion ?? "",
+      })),
+      strengths: stored.strengths ?? [],
+      recommendation: stored.recommendation ?? "Request Changes",
+    },
+    ranAt: stored.createdAt,
+    durationMs: stored.durationMs,
+    source: "stored",
+    trigger: stored.trigger,
+    counts: stored.counts,
+    fileDistribution: stored.fileDistribution,
+  };
 }
 
-export function writeCachedReview(
-  repoId: number | string,
-  prNumber: number | string,
-  entry: CachedReview,
-) {
-  if (typeof window === "undefined") return;
-  try {
-    window.sessionStorage.setItem(cacheKey(repoId, prNumber), JSON.stringify(entry));
-  } catch {
-    // storage full or blocked — the review still shows for this page view
-  }
+/**
+ * A review that has just come back from POST /pr/ai-review, which still
+ * uses the model's 0–10 scale. Converted here so every consumer sees 0–100.
+ */
+export function liveToView(review: ReviewResult, durationMs: number): ReviewView {
+  return {
+    review: {
+      ...review,
+      overallScore: toPercent(review.overallScore) ?? 0,
+      securityScore: toPercent(review.securityScore) ?? 0,
+      performanceScore: toPercent(review.performanceScore) ?? 0,
+      qualityScore: toPercent(review.qualityScore) ?? 0,
+    },
+    ranAt: new Date().toISOString(),
+    durationMs,
+    source: "live",
+    trigger: "manual",
+  };
+}
+
+/*
+  Vocabulary for scores and severities.
+
+  Both were previously presented as bare assertions — a number with no
+  denominator and a coloured word with no definition. Two engineers reading
+  the same "High" badge would disagree about whether it should block a
+  merge, which makes the merge gate arbitrary.
+*/
+
+export type ScoreBand = "Strong" | "Fair" | "Weak" | "Poor";
+
+/** A 0–100 score as a word, so the number is interpretable at a glance. */
+export function scoreBand(percent: number | null | undefined): ScoreBand | null {
+  if (percent === null || percent === undefined) return null;
+  if (percent >= 85) return "Strong";
+  if (percent >= 70) return "Fair";
+  if (percent >= 50) return "Weak";
+  return "Poor";
+}
+
+export const SCORE_SCALE_HELP =
+  "Scored 0–100 by the review model. 85+ strong, 70–84 fair, 50–69 weak, below 50 poor.";
+
+/**
+ * What each severity actually means. Shown from any badge so the labels
+ * carry a fixed definition rather than each reader's assumption.
+ */
+export const SEVERITY_DEFINITIONS: Record<Severity, string> = {
+  Critical:
+    "Exploitable now, or loses data. Fix before merging — this is what the merge gate blocks on by default.",
+  High: "Exploitable under conditions you should assume will happen, or a serious correctness bug.",
+  Medium: "A real defect with limited blast radius, or a problem that will bite under load.",
+  Low: "Worth knowing about. Style, duplication, or a risk that needs an unlikely combination to matter.",
+};
+
+export const HEALTH_HELP =
+  "The average of the newest review score for each pull request in this repository over the selected period. Fixing findings raises it.";
+
+/** Which findings moved a score, phrased for a tooltip. */
+export function scoreDrivers(counts?: {
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+}) {
+  if (!counts) return null;
+
+  const parts: string[] = [];
+  if (counts.critical) parts.push(`${counts.critical} Critical`);
+  if (counts.high) parts.push(`${counts.high} High`);
+  if (counts.medium) parts.push(`${counts.medium} Medium`);
+  if (counts.low) parts.push(`${counts.low} Low`);
+
+  if (parts.length === 0) return "No findings were raised.";
+  return `Driven by ${parts.join(", ")}.`;
 }

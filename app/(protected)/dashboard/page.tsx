@@ -1,20 +1,21 @@
 "use client";
 
-import { BookMarked, GitMerge, GitPullRequest, Plus, Webhook, Workflow } from "lucide-react";
+import { AlertTriangle, BookMarked, Check, Clock, GitPullRequest, Plus } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 
 import { PageHeading, SidebarShell } from "@/components/shell/app-shell";
 import { displayName, useUser } from "@/components/shell/user-context";
 import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorBanner, LoadingState } from "@/components/ui/feedback";
+import { Segmented } from "@/components/ui/segmented";
+import { formatDuration } from "@/lib/format";
 
-import { AttentionList, type OpenPull } from "./_components/attention-list";
+import { AttentionList } from "./_components/attention-list";
 import { RunActivity } from "./_components/run-activity";
+import { SetupChecklist } from "./_components/setup-checklist";
 import { SplitBar, StatCard } from "./_components/stat-card";
-import { hasWorkflow, useWorkspace } from "./_components/use-workspace";
-
-const WEEK = 7 * 24 * 60 * 60 * 1000;
+import { type RangeDays, useWorkspace } from "./_components/use-workspace";
 
 function greeting() {
   const hour = new Date().getHours();
@@ -23,43 +24,44 @@ function greeting() {
   return "Good evening";
 }
 
+/*
+  Every stat shows how it moved against the previous window of the same
+  length. A number with no baseline cannot be acted on — "248 reviews" says
+  nothing until you know last week was 210.
+*/
+function Delta({ value, previous, lowerIsBetter }: {
+  value: number;
+  previous: number;
+  lowerIsBetter?: boolean;
+}) {
+  if (!previous) return null;
+
+  const change = value - previous;
+  if (change === 0) return <span className="text-[13px] text-fg-subtle">no change</span>;
+
+  const better = lowerIsBetter ? change < 0 : change > 0;
+  const percent = Math.round((change / previous) * 100);
+
+  return (
+    <span className={better ? "text-[13px] font-semibold text-pass" : "text-[13px] font-semibold text-high"}>
+      {change > 0 ? "+" : ""}
+      {percent}%
+    </span>
+  );
+}
+
 export default function DashboardPage() {
   const user = useUser();
-  const { data, error, loading, reload } = useWorkspace();
-  const [now] = useState(() => Date.now());
+  const [range, setRange] = useState<RangeDays>(7);
+  const { data, error, loading, reload } = useWorkspace(range);
 
-  const summary = useMemo(() => {
-    if (!data) return null;
-    const open: OpenPull[] = data.pullsByRepo
-      .flatMap(({ repo, pulls }) =>
-        pulls.filter((pr) => pr.state === "open").map((pr) => ({ repo, pr })),
-      )
-      .sort(
-        (a, b) => new Date(b.pr.createdAtGithub).getTime() - new Date(a.pr.createdAtGithub).getTime(),
-      );
-    const drafts = open.filter(({ pr }) => pr.draft).length;
-    const allPulls = data.pullsByRepo.flatMap((entry) => entry.pulls);
-    const mergedThisWeek = allPulls.filter(
-      (pr) => pr.mergedAtGithub && now - new Date(pr.mergedAtGithub).getTime() < WEEK,
-    ).length;
-    const closedThisWeek = allPulls.filter(
-      (pr) =>
-        pr.state === "closed" &&
-        !pr.mergedAtGithub &&
-        pr.closedAtGithub &&
-        now - new Date(pr.closedAtGithub).getTime() < WEEK,
-    ).length;
-    const withWorkflow = data.repos.filter(hasWorkflow).length;
-    const webhooks = data.repos.filter((repo) => repo.webhookActive).length;
-    const unreachable = data.pullsByRepo.filter((entry) => entry.failed).length;
+  const stats = data?.stats.stats;
+  const severity = stats?.findingsRaised.bySeverity;
 
-    return { open, drafts, mergedThisWeek, closedThisWeek, withWorkflow, webhooks, unreachable };
-  }, [data, now]);
-
-  const description = summary
-    ? summary.open.length === 0
-      ? "No pull requests are open on your connected repositories."
-      : `${summary.open.length} open pull ${summary.open.length === 1 ? "request" : "requests"} across ${data!.repos.length} connected ${data!.repos.length === 1 ? "repository" : "repositories"}.`
+  const description = data
+    ? data.attention.blockedCount === 0
+      ? "Nothing is blocked. Every reviewed pull request cleared."
+      : `${data.attention.blockedCount} pull ${data.attention.blockedCount === 1 ? "request is" : "requests are"} waiting on a human.`
     : "Here's what's happening with your repositories.";
 
   return (
@@ -79,7 +81,19 @@ export default function DashboardPage() {
         </>
       }
     >
-      <PageHeading title={`${greeting()}, ${displayName(user)}`} description={description} />
+      <div className="flex flex-wrap items-end justify-between gap-4">
+        <PageHeading title={`${greeting()}, ${displayName(user)}`} description={description} />
+        <Segmented
+          label="Reporting period"
+          value={String(range)}
+          onChange={(value) => setRange(Number(value) as RangeDays)}
+          options={[
+            { value: "7", label: "7 days" },
+            { value: "30", label: "30 days" },
+            { value: "90", label: "90 days" },
+          ]}
+        />
+      </div>
 
       {loading && !data ? <LoadingState label="Loading your workspace…" /> : null}
 
@@ -92,8 +106,8 @@ export default function DashboardPage() {
         </ErrorBanner>
       ) : null}
 
-      {data && summary ? (
-        data.repos.length === 0 ? (
+      {data && stats ? (
+        data.stats.connectedRepos === 0 ? (
           <div className="mt-6 rounded-xl border border-line bg-surface">
             <EmptyState
               icon={<BookMarked />}
@@ -108,74 +122,101 @@ export default function DashboardPage() {
           </div>
         ) : (
           <>
-            {summary.unreachable > 0 ? (
-              <ErrorBanner className="mt-6">
-                Pull requests for {summary.unreachable}{" "}
-                {summary.unreachable === 1 ? "repository" : "repositories"} could not be loaded from
-                GitHub.
-              </ErrorBanner>
-            ) : null}
+            <SetupChecklist
+              repos={data.repos}
+              hasReview={stats.prsReviewed.value > 0}
+              firstReviewableHref={data.firstReviewableHref}
+            />
 
             <div className="mt-6 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
               <StatCard
-                label="Open pull requests"
+                label="Pull requests reviewed"
                 icon={GitPullRequest}
-                value={summary.open.length}
-                note={summary.drafts ? `${summary.drafts} draft` : undefined}
+                value={stats.prsReviewed.value}
+                note={
+                  <Delta
+                    value={stats.prsReviewed.value}
+                    previous={stats.prsReviewed.previous}
+                  />
+                }
+              >
+                <div className="text-[12.5px] text-fg-subtle">
+                  Across {data.stats.connectedRepos}{" "}
+                  {data.stats.connectedRepos === 1 ? "repository" : "repositories"} in the last{" "}
+                  {range} days
+                </div>
+              </StatCard>
+
+              <StatCard
+                label="Findings raised"
+                icon={AlertTriangle}
+                value={stats.findingsRaised.value}
+                note={
+                  <Delta
+                    value={stats.findingsRaised.value}
+                    previous={stats.findingsRaised.previous}
+                    lowerIsBetter
+                  />
+                }
               >
                 <SplitBar
                   parts={[
-                    { value: summary.open.length - summary.drafts, className: "bg-violet-500" },
-                    { value: summary.drafts, className: "bg-line-control" },
+                    { value: severity?.critical ?? 0, className: "bg-critical-solid" },
+                    { value: severity?.high ?? 0, className: "bg-high-solid" },
+                    { value: severity?.medium ?? 0, className: "bg-medium-solid" },
+                    { value: severity?.low ?? 0, className: "bg-low-solid" },
                   ]}
                 />
                 <div className="mt-[9px] text-[12.5px] text-fg-subtle">
-                  {summary.open.length - summary.drafts} ready · {summary.drafts} draft
+                  {severity?.critical ?? 0} critical · {severity?.high ?? 0} high ·{" "}
+                  {severity?.medium ?? 0} medium · {severity?.low ?? 0} low
                 </div>
               </StatCard>
 
               <StatCard
-                label="Merged this week"
-                icon={GitMerge}
-                value={summary.mergedThisWeek}
+                label="Median review time"
+                icon={Clock}
+                value={
+                  stats.medianReviewMs.value
+                    ? (formatDuration(stats.medianReviewMs.value) ?? "—")
+                    : "—"
+                }
+                note={
+                  <Delta
+                    value={stats.medianReviewMs.value}
+                    previous={stats.medianReviewMs.previous}
+                    lowerIsBetter
+                  />
+                }
               >
                 <div className="text-[12.5px] text-fg-subtle">
-                  {summary.closedThisWeek} closed without merging in the last 7 days
+                  Half of reviews finish faster than this
                 </div>
               </StatCard>
 
               <StatCard
-                label="Active workflows"
-                icon={Workflow}
-                value={summary.withWorkflow}
-                note={`of ${data.repos.length} repos`}
-              >
-                <SplitBar
-                  parts={[
-                    { value: summary.withWorkflow, className: "bg-pass-solid" },
-                    { value: data.repos.length - summary.withWorkflow, className: "bg-high-solid" },
-                  ]}
-                />
-                <div className="mt-[9px] text-[12.5px] text-fg-subtle">
-                  {data.repos.length - summary.withWorkflow} connected with no workflow
-                </div>
-              </StatCard>
-
-              <StatCard
-                label="Webhooks active"
-                icon={Webhook}
-                value={summary.webhooks}
-                note={`of ${data.repos.length} repos`}
+                label="Cleared automatically"
+                icon={Check}
+                value={stats.cleanPrs.value}
+                note={
+                  <span className="text-[13px] text-fg-subtle">
+                    {stats.cleanPrs.percentage}% of reviewed
+                  </span>
+                }
               >
                 <div className="text-[12.5px] text-fg-subtle">
-                  Workflows run automatically when a PR is opened or updated
+                  Reviewed with no Critical or High finding — the rule the merge gate uses
                 </div>
               </StatCard>
             </div>
 
             <div className="mt-5 grid grid-cols-1 gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,1fr)]">
-              <AttentionList pulls={summary.open} />
-              <RunActivity pullsByRepo={data.pullsByRepo} />
+              <AttentionList
+                pulls={data.attention.pullRequests}
+                blockedCount={data.attention.blockedCount}
+                clearedCount={data.attention.clearedCount}
+              />
+              <RunActivity activity={data.activity} />
             </div>
           </>
         )

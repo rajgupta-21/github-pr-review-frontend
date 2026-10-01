@@ -18,10 +18,10 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorBanner, LoadingState } from "@/components/ui/feedback";
 import { Select } from "@/components/ui/input";
 import { Segmented } from "@/components/ui/segmented";
-import { enableWebhook, getRepoPulls } from "@/lib/api";
+import { enableWebhook, getRepoPulls, getRepoReviews } from "@/lib/api";
 import { formatDate, pluralize, timeAgo } from "@/lib/format";
-import { countBySeverity, gateHeld, readCachedReview, scoreTextClass, toPercent } from "@/lib/review";
-import type { ConnectedRepo, PullRequest, ReviewResult } from "@/lib/types";
+import { scoreTextClass } from "@/lib/review";
+import type { ConnectedRepo, PullRequest, RepoReviewSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { useRepo } from "./_components/hooks";
@@ -62,16 +62,23 @@ export default function RepoDetailPage({ params }: { params: Promise<{ repoId: s
     };
   }, [repo]);
 
-  // Reviews run this session (they are not stored server-side yet). `pulls` is
-  // only set client-side, so reading sessionStorage here cannot mismatch SSR.
-  const reviews = useMemo(() => {
-    const found: Record<number, ReviewResult> = {};
-    for (const pr of pulls ?? []) {
-      const cached = readCachedReview(repoId, pr.githubPrNumber);
-      if (cached) found[pr.githubPrNumber] = cached.review;
-    }
-    return found;
-  }, [pulls, repoId]);
+  /*
+    Scores and finding counts for every PR in this repository, in one
+    request. Previously read from sessionStorage, so a reload emptied the
+    column and a teammate never saw any score at all.
+  */
+  const [reviews, setReviews] = useState<Record<string, RepoReviewSummary>>({});
+
+  useEffect(() => {
+    let cancelled = false;
+    getRepoReviews(repoId)
+      .then((data) => !cancelled && setReviews(data.reviews ?? {}))
+      // A repo with no reviews yet is normal; the column just stays empty
+      .catch(() => !cancelled && setReviews({}));
+    return () => {
+      cancelled = true;
+    };
+  }, [repoId]);
 
   const counts = useMemo(() => {
     const c = { open: 0, merged: 0, closed: 0 };
@@ -295,14 +302,24 @@ function PullRow({
 }: {
   pr: PullRequest;
   repoId: string;
-  review?: ReviewResult;
+  review?: RepoReviewSummary;
   last: boolean;
 }) {
   const state = prState(pr);
   const look = STATE_ICON[pr.draft && state === "open" ? "draft" : state];
   const Icon = look.icon;
-  const counts = review ? countBySeverity(review.findings) : null;
-  const score = review ? toPercent(review.overallScore) : null;
+  // Counts and scores come from the stored review — already 0–100
+  const counts = review
+    ? {
+        critical: review.criticalCount,
+        high: review.highCount,
+        medium: review.mediumCount,
+        low: review.lowCount,
+      }
+    : null;
+  const score = review ? review.overallScore : null;
+  // The gate holds on anything Critical or High, matching the server rule
+  const held = Boolean(review && (review.criticalCount > 0 || review.highCount > 0));
 
   return (
     <Link
@@ -326,7 +343,7 @@ function PullRow({
           <span className="font-mono text-[13px] text-fg-faint">#{pr.githubPrNumber}</span>
           {pr.draft ? <Badge tone="muted">Draft</Badge> : null}
           {review && state === "open" ? (
-            gateHeld(review) ? (
+            held ? (
               <Badge className="border border-critical-line bg-[#FDF4F5] text-critical">
                 Merge gate held
               </Badge>

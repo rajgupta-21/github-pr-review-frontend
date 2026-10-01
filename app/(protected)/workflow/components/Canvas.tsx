@@ -19,6 +19,8 @@ import "reactflow/dist/style.css";
 import { TopbarShell } from "@/components/shell/app-shell";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Dialog } from "@/components/ui/dialog";
+import { PrPicker } from "@/components/ui/pr-picker";
 import { ErrorBanner, LoadingState } from "@/components/ui/feedback";
 import { enableWebhook, executeWorkflow, getWorkflow, saveWorkflow } from "@/lib/api";
 import type {
@@ -125,10 +127,27 @@ export default function Canvas({
   const [executionPanelOpen, setExecutionPanelOpen] = useState(false);
   const [executionResult, setExecutionResult] = useState<WorkflowExecutionResult | null>(null);
   const [plannedSteps, setPlannedSteps] = useState<ExecutionStep[]>([]);
+  const [pendingRepoId, setPendingRepoId] = useState<number | null>(null);
   const [runPrNumber, setRunPrNumber] = useState<number | null>(null);
   const [runStartedAt, setRunStartedAt] = useState<number | null>(null);
   const [runFinishedAt, setRunFinishedAt] = useState<number | null>(null);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  /*
+  Switching repositories remounts the canvas, so anything unsaved is gone.
+  Compare a cheap signature of the graph against the last one we loaded or
+  saved to warn before that happens.
+  */
+  const graphSignature = useCallback(
+    (graphNodes: WorkflowNode[], graphEdges: Edge[]) =>
+      JSON.stringify({
+        n: graphNodes.map((n) => [n.id, n.data?.nodeType, n.data?.label]).sort(),
+        e: graphEdges.map((e) => [e.source, e.target]).sort(),
+      }),
+    [],
+  );
+  const savedSignature = useRef<string>("");
+  const isDirty = graphSignature(nodes, edges) !== savedSignature.current;
 
   const selectedNode = useMemo(
     () => nodes.find((node) => node.id === selectedNodeId) ?? null,
@@ -177,13 +196,13 @@ export default function Canvas({
           .filter((node) => !isPlaceholderNode(node));
         const ids = new Set(loadedNodes.map((node) => node.id));
         setNodes(loadedNodes);
-        setEdges(
-          ((graph.edges || []) as Edge[]).filter(
-            (edge) => ids.has(edge.source) && ids.has(edge.target),
-          ),
+        const loadedEdges = ((graph.edges || []) as Edge[]).filter(
+          (edge) => ids.has(edge.source) && ids.has(edge.target),
         );
+        setEdges(loadedEdges);
         setWorkflowName(graph.definition?.name || DEFAULT_WORKFLOW_NAME);
         setWebhookActive(Boolean(data.webhookActive));
+        savedSignature.current = graphSignature(loadedNodes, loadedEdges);
         requestAnimationFrame(() => reactFlow.fitView({ padding: 0.2 }));
       })
       .catch((error: unknown) => {
@@ -200,7 +219,7 @@ export default function Canvas({
     return () => {
       cancelled = true;
     };
-  }, [reactFlow, repo.repoId, setEdges, setNodes]);
+  }, [graphSignature, reactFlow, repo.repoId, setEdges, setNodes]);
 
   // ─── Graph editing ───
   const onConnect = useCallback(
@@ -212,14 +231,14 @@ export default function Canvas({
     [setEdges],
   );
 
-  const onDrop = useCallback(
-    (event: React.DragEvent<HTMLDivElement>) => {
-      event.preventDefault();
-      const rawType = event.dataTransfer.getData("application/reactflow");
-      if (!rawType) return;
-
+  /*
+    One place that builds a node, so dragging and clicking produce exactly
+    the same thing. Click-to-add exists because the palette was drag-only,
+    which left keyboard users unable to build a workflow at all.
+  */
+  const createNode = useCallback(
+    (rawType: string, position: { x: number; y: number }) => {
       const type = normalizeNodeType(rawType);
-      const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
 
       const newNode: WorkflowNode = {
         id: `node-${Date.now()}`,
@@ -238,7 +257,30 @@ export default function Canvas({
       setNodes((nds) => nds.concat(newNode));
       setSelectedNodeId(newNode.id);
     },
-    [reactFlow, setNodes],
+    [setNodes],
+  );
+
+  const onDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const rawType = event.dataTransfer.getData("application/reactflow");
+      if (!rawType) return;
+
+      createNode(rawType, reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY }));
+    },
+    [createNode, reactFlow],
+  );
+
+  /*
+    Clicking a palette item drops the node into open space below the last
+    one, so a workflow can be built without ever dragging.
+  */
+  const handleAddNode = useCallback(
+    (rawType: string) => {
+      const lowest = nodes.reduce((max, node) => Math.max(max, node.position?.y ?? 0), 0);
+      createNode(rawType, { x: 160, y: nodes.length === 0 ? 80 : lowest + 140 });
+    },
+    [createNode, nodes],
   );
 
   const onDragOver = useCallback((event: React.DragEvent<HTMLDivElement>) => {
@@ -324,19 +366,24 @@ export default function Canvas({
     });
     setSavedAt(new Date().toISOString());
     setWebhookActive(Boolean(data.webhookActive));
+    savedSignature.current = graphSignature(runnableNodes, runnableEdges);
     return { data, runnableNodes, runnableEdges };
-  }, [edges, generateWorkflow, nodes, repo.repoId]);
+  }, [edges, generateWorkflow, graphSignature, nodes, repo.repoId]);
 
   const handleSave = useCallback(async () => {
     setIsSaving(true);
     try {
       const { data } = await persist();
+      // Name the repository in the confirmation — "Saved" alone gave no way
+      // to notice the canvas was pointed at a different repo than intended.
       flash(
         {
           tone: "success",
-          text: data.webhookActive ? "Saved — webhook active for PR events" : "Saved",
+          text: data.webhookActive
+            ? `Saved to ${repo.fullName} — webhook active`
+            : `Saved to ${repo.fullName}`,
         },
-        data.webhookActive ? 4000 : 2500,
+        4000,
       );
     } catch (error) {
       console.error("Save workflow error", error);
@@ -344,7 +391,7 @@ export default function Canvas({
     } finally {
       setIsSaving(false);
     }
-  }, [flash, persist]);
+  }, [flash, persist, repo.fullName]);
 
   const handleRunWorkflow = useCallback(async () => {
     if (nodes.length === 0) return;
@@ -457,7 +504,17 @@ export default function Canvas({
 
   return (
     <TopbarShell
-      crumbs={[{ label: "Workflows", href: "/workflow" }, { label: workflowName || DEFAULT_WORKFLOW_NAME }]}
+      /*
+      The repository goes in the breadcrumb because it is the one thing
+      that decides where Save writes. The workflow name defaults to the
+      same string for every repo, so a breadcrumb showing only the name
+      gave no clue which repository was being edited.
+      */
+      crumbs={[
+        { label: "Workflows", href: "/workflow" },
+        { label: repo.fullName, mono: true },
+        { label: workflowName || DEFAULT_WORKFLOW_NAME },
+      ]}
       actions={
         <>
           {notice ? (
@@ -472,11 +529,21 @@ export default function Canvas({
             </span>
           ) : null}
           {repos.length > 1 ? (
-            <label className="hidden lg:block">
+            <label className="block">
               <span className="sr-only">Repository</span>
               <select
                 value={repo.repoId}
-                onChange={(event) => onSelectRepo(Number(event.target.value))}
+                onChange={(event) => {
+                  const nextRepoId = Number(event.target.value);
+                  if (isDirty) {
+                    // Ask in our own dialog — window.confirm cannot explain
+                    // what is about to be lost, or be styled or made accessible
+                    setPendingRepoId(nextRepoId);
+                    event.target.value = String(repo.repoId);
+                    return;
+                  }
+                  onSelectRepo(nextRepoId);
+                }}
                 className="h-9 max-w-52 truncate rounded-[9px] border border-ink-line-strong bg-ink-850 px-2.5 font-mono text-[12.5px] text-ink-fg outline-none focus:border-violet-400"
               >
                 {repos.map((item) => (
@@ -487,7 +554,7 @@ export default function Canvas({
               </select>
             </label>
           ) : (
-            <span className="hidden font-mono text-[12.5px] text-ink-muted lg:inline">
+            <span className="font-mono text-[12.5px] text-ink-muted">
               {repo.fullName}
             </span>
           )}
@@ -500,18 +567,18 @@ export default function Canvas({
             {webhookActive ? "Webhook on" : "Webhook off"}
           </Badge>
           <span className="mx-0.5 hidden h-6 w-px bg-ink-line-strong sm:block" aria-hidden="true" />
-          <label>
-            <span className="sr-only">Pull request number for a test run</span>
-            <input
-              type="number"
-              min={1}
-              inputMode="numeric"
-              value={prNumber}
-              onChange={(event) => setPrNumber(event.target.value)}
-              placeholder="PR #"
-              className="h-9 w-[76px] rounded-[9px] border border-ink-line-strong bg-transparent px-2.5 font-mono text-[13px] text-ink-fg outline-none placeholder:text-ink-subtle focus:border-violet-400"
-            />
-          </label>
+          {/*
+            Was a bare number input, which meant opening github.com to look
+            the number up. The picker lists this repo's pull requests by
+            title, searchable, open ones first.
+          */}
+          <PrPicker
+            repo={repo}
+            value={prNumber}
+            onChange={setPrNumber}
+            tone="dark"
+            className="w-[200px] xl:w-[260px]"
+          />
           <Button
             variant="ink"
             size="sm"
@@ -520,7 +587,7 @@ export default function Canvas({
             disabled={isRunning || runnableCount === 0}
           >
             {isRunning ? null : <Play aria-hidden="true" />}
-            {isRunning ? "Running…" : "Test run"}
+            {isRunning ? "Running…" : "Run on a PR"}
           </Button>
           <Button variant="primary" size="sm" onClick={handleSave} loading={isSaving} disabled={isSaving}>
             Save &amp; publish
@@ -529,7 +596,7 @@ export default function Canvas({
       }
     >
       <div className="flex h-[calc(100vh-56px)] min-h-[560px]">
-        <NodeSidebar />
+        <NodeSidebar onAdd={handleAddNode} />
 
         <div className="relative min-w-0 flex-1 bg-[#F1F0EC]" onDrop={onDrop} onDragOver={onDragOver}>
           {loadError ? (
@@ -609,6 +676,25 @@ export default function Canvas({
           }}
         />
       </div>
+      <Dialog
+        open={pendingRepoId !== null}
+        onClose={() => setPendingRepoId(null)}
+        title="Discard unsaved changes?"
+        tone="destructive"
+        confirmLabel="Discard and switch"
+        description={
+          <>
+            Your edits to the workflow for{" "}
+            <span className="font-mono text-[13px]">{repo.fullName}</span> have not been saved.
+            Switching repositories loads a different workflow and these changes are lost.
+          </>
+        }
+        onConfirm={() => {
+          const next = pendingRepoId;
+          setPendingRepoId(null);
+          if (next !== null) onSelectRepo(next);
+        }}
+      />
     </TopbarShell>
   );
 }

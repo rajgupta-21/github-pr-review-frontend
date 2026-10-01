@@ -2,57 +2,46 @@
 
 import { AlertTriangle, Check, GitPullRequest, Zap } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useSyncExternalStore } from "react";
 
-import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardHeader } from "@/components/ui/card";
 import { EmptyState } from "@/components/ui/feedback";
 import { timeAgo } from "@/lib/format";
-import { type CachedReview, countBySeverity, readCachedReview, toPercent } from "@/lib/review";
-import type { ConnectedRepo, PullRequest } from "@/lib/types";
+import { scoreTextClass } from "@/lib/review";
+import type { AttentionPull } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export type OpenPull = { repo: ConnectedRepo; pr: PullRequest };
+/*
+  "Needs your attention" — pull requests whose newest review raised
+  something Critical or High, across every connected repository.
 
-const LIMIT = 6;
-
-const subscribeNever = () => () => {};
-
-function worstFinding(entry: CachedReview | null) {
-  if (!entry) return null;
-  const counts = countBySeverity(entry.review.findings);
-  if (counts.critical) return { tone: "critical" as const, count: counts.critical };
-  if (counts.high) return { tone: "high" as const, count: counts.high };
-  if (counts.medium) return { tone: "medium" as const, count: counts.medium };
-  if (counts.low) return { tone: "low" as const, count: counts.low };
-  return { tone: "pass" as const, count: 0 };
-}
+  The server decides what qualifies and in what order (Critical first, then
+  High, then the lower score), so this list matches the merge gate rather
+  than re-deriving a second opinion in the browser.
+*/
 
 const TILE = {
   critical: { className: "bg-critical-fill text-[#B3253C]", Icon: AlertTriangle },
   high: { className: "bg-high-fill text-[#9A5A0B]", Icon: Zap },
-  medium: { className: "bg-medium-fill text-medium", Icon: AlertTriangle },
-  low: { className: "bg-low-fill text-low", Icon: AlertTriangle },
-  pass: { className: "bg-pass-fill text-pass-solid", Icon: Check },
   none: { className: "bg-surface-hover text-fg-muted", Icon: GitPullRequest },
 };
 
-/** "Needs your attention": open PRs across connected repos, newest first. */
-export function AttentionList({ pulls }: { pulls: OpenPull[] }) {
-  // Cached reviews live in sessionStorage — only read on the client so SSR and hydration agree.
-  const isClient = useSyncExternalStore(subscribeNever, () => true, () => false);
-  const reviews = useMemo(() => {
-    const next: Record<string, CachedReview | null> = {};
-    if (!isClient) return next;
-    for (const { repo, pr } of pulls) {
-      next[`${repo.repoId}:${pr.githubPrNumber}`] = readCachedReview(repo.repoId, pr.githubPrNumber);
-    }
-    return next;
-  }, [isClient, pulls]);
+function worstTone(pr: AttentionPull): keyof typeof TILE {
+  if (pr.criticalCount > 0) return "critical";
+  if (pr.highCount > 0) return "high";
+  return "none";
+}
 
-  const shown = pulls.slice(0, LIMIT);
-  const hidden = pulls.length - shown.length;
+export function AttentionList({
+  pulls,
+  clearedCount,
+  blockedCount,
+}: {
+  pulls: AttentionPull[];
+  clearedCount: number;
+  blockedCount: number;
+}) {
+  const hidden = blockedCount - pulls.length;
 
   return (
     <Card>
@@ -60,8 +49,8 @@ export function AttentionList({ pulls }: { pulls: OpenPull[] }) {
         title="Needs your attention"
         action={<Link href="/repos">All repositories →</Link>}
       >
-        <Badge tone={pulls.length ? "violet" : "neutral"} size="lg" className="py-0.5 text-xs">
-          {pulls.length}
+        <Badge tone={blockedCount ? "violet" : "neutral"} size="lg" className="py-0.5 text-xs">
+          {blockedCount}
         </Badge>
       </CardHeader>
 
@@ -69,21 +58,22 @@ export function AttentionList({ pulls }: { pulls: OpenPull[] }) {
         <EmptyState
           icon={<Check />}
           title="Nothing is waiting on you"
-          description="There are no open pull requests on your connected repositories."
+          description={
+            clearedCount > 0
+              ? `${clearedCount} reviewed pull ${clearedCount === 1 ? "request" : "requests"} cleared with nothing serious.`
+              : "No reviewed pull request has a Critical or High finding."
+          }
         />
       ) : (
         <div className="px-2 pt-2 pb-3">
-          {shown.map(({ repo, pr }, index) => {
-            const cached = reviews[`${repo.repoId}:${pr.githubPrNumber}`] ?? null;
-            const worst = worstFinding(cached);
-            const tile = TILE[worst?.tone ?? "none"];
-            const score = cached ? toPercent(cached.review.overallScore) : null;
+          {pulls.map((pr, index) => {
+            const tile = TILE[worstTone(pr)];
 
             return (
-              <div key={pr._id}>
+              <div key={pr.reviewId}>
                 {index > 0 ? <div className="mx-3 h-px bg-line-soft" /> : null}
                 <Link
-                  href={`/repos/${repo.repoId}/pulls/${pr.githubPrNumber}`}
+                  href={`/repos/${pr.githubRepoId}/pulls/${pr.prNumber}`}
                   className="flex flex-wrap items-center gap-3.5 rounded-[12px] px-3 py-3.5 text-inherit no-underline transition-colors hover:bg-surface-sunken hover:text-inherit sm:flex-nowrap"
                 >
                   <span
@@ -94,55 +84,52 @@ export function AttentionList({ pulls }: { pulls: OpenPull[] }) {
                   >
                     <tile.Icon className="size-[19px]" strokeWidth={2} aria-hidden="true" />
                   </span>
+
                   <div className="min-w-0 flex-1">
                     <div className="flex min-w-0 items-center gap-[9px]">
                       <span className="shrink-0 font-mono text-[12.5px] text-fg-subtle">
-                        #{pr.githubPrNumber}
+                        #{pr.prNumber}
                       </span>
-                      <span className="truncate text-[15px] font-semibold text-fg">{pr.title}</span>
+                      <span className="truncate text-[15px] font-semibold text-fg">
+                        {pr.title ?? `Pull request #${pr.prNumber}`}
+                      </span>
                     </div>
-                    <div className="mt-1.5 flex flex-wrap items-center gap-2 text-[13px] text-[#6B6880]">
-                      <span className="font-mono">{repo.fullName}</span>
+                    <div className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px] text-fg-muted">
+                      <span className="font-mono text-[12.5px]">{pr.fullName}</span>
+                      {pr.author ? (
+                        <>
+                          <span aria-hidden="true">·</span>
+                          <span>{pr.author}</span>
+                        </>
+                      ) : null}
                       <span aria-hidden="true">·</span>
-                      <span className="inline-flex items-center gap-1.5">
-                        <Avatar
-                          name={pr.author?.login}
-                          src={pr.author?.avatarUrl}
-                          size={18}
-                          className="sm:hidden"
-                        />
-                        {pr.author?.login}
-                      </span>
-                      <span aria-hidden="true">·</span>
-                      <span>{timeAgo(pr.createdAtGithub)}</span>
+                      <span>reviewed {timeAgo(pr.reviewedAt)}</span>
                     </div>
                   </div>
-                  <div className="ml-[52px] flex shrink-0 items-center gap-2 sm:ml-0">
-                    {pr.draft ? (
-                      <Badge tone="outline" size="lg">
-                        Draft
+
+                  <div className="flex shrink-0 items-center gap-2">
+                    {pr.criticalCount > 0 ? (
+                      <Badge className="border border-critical-line bg-[#FDF4F5] text-critical">
+                        {pr.criticalCount} critical
                       </Badge>
                     ) : null}
-                    {cached && worst ? (
-                      <>
-                        {worst.tone !== "pass" ? (
-                          <Badge tone={worst.tone} size="lg">
-                            {worst.count} {worst.tone}
-                          </Badge>
-                        ) : (
-                          <Badge tone="pass" size="lg">
-                            Clean
-                          </Badge>
-                        )}
-                        <Badge tone="neutral" size="lg">
-                          Score {score ?? "—"}
-                        </Badge>
-                      </>
-                    ) : (
-                      <Badge tone="neutral" size="lg">
-                        Not reviewed
+                    {pr.highCount > 0 ? (
+                      <Badge className="border border-[#F0DFC2] bg-[#FDF9F2] text-high">
+                        {pr.highCount} high
                       </Badge>
-                    )}
+                    ) : null}
+                    <span className="w-[52px] text-right">
+                      <span
+                        className={cn(
+                          "font-display text-[19px] font-bold",
+                          scoreTextClass(pr.overallScore),
+                        )}
+                      >
+                        {pr.overallScore}
+                      </span>
+                      {/* The denominator is shown because a bare number is not interpretable */}
+                      <span className="text-[12px] text-fg-faint">/100</span>
+                    </span>
                   </div>
                 </Link>
               </div>
@@ -150,18 +137,18 @@ export function AttentionList({ pulls }: { pulls: OpenPull[] }) {
           })}
 
           {hidden > 0 ? (
-            <>
-              <div className="mx-3 h-px bg-line-soft" />
-              <div className="flex items-center gap-3.5 px-3 py-3.5">
-                <span className="inline-flex size-[38px] shrink-0 items-center justify-center rounded-[11px] bg-surface-hover text-fg-muted">
-                  <GitPullRequest className="size-[19px]" aria-hidden="true" />
-                </span>
-                <div className="text-[14.5px] text-fg-3">
-                  {hidden} more open pull {hidden === 1 ? "request" : "requests"} across your
-                  repositories.
-                </div>
-              </div>
-            </>
+            <p className="px-3 pt-2 text-[13px] text-fg-subtle">
+              {hidden} more blocked pull {hidden === 1 ? "request" : "requests"}.
+            </p>
+          ) : null}
+
+          {clearedCount > 0 ? (
+            <div className="mx-1 mt-2 flex items-center gap-3 rounded-[12px] bg-surface-sunken px-3 py-3">
+              <Check className="size-4 shrink-0 text-pass-solid" aria-hidden="true" />
+              <span className="text-[13.5px] text-fg-muted">
+                {clearedCount} more reviewed clean and needed nothing from you.
+              </span>
+            </div>
           ) : null}
         </div>
       )}

@@ -1,4 +1,4 @@
-import { BookMarked, LayoutDashboard, Workflow } from "lucide-react";
+import { BookMarked, GitPullRequest, LayoutDashboard, Settings, Workflow } from "lucide-react";
 
 export type NavItem = {
   href: string;
@@ -8,14 +8,16 @@ export type NavItem = {
   match?: string[];
 };
 
-/*
-  Only screens that exist. The design also shows Pull requests, Usage and
-  Settings — those have no backing routes yet (see status/not-done.md).
-*/
 export const WORKSPACE_NAV: NavItem[] = [
   { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard },
+  // Cross-repo view — the alternative was opening each repository in turn
+  { href: "/pulls", label: "Pull requests", icon: GitPullRequest },
   { href: "/repos", label: "Repositories", icon: BookMarked },
   { href: "/workflow", label: "Workflows", icon: Workflow },
+];
+
+export const ACCOUNT_NAV: NavItem[] = [
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 export function isActive(pathname: string, item: NavItem) {

@@ -27,6 +27,13 @@ import { DiffView } from "../../_components/diff";
 import { usePull, useRepo, useReview } from "../../_components/hooks";
 import { BotMark, findingMatchesFile, SEVERITY_DOT, worstTone } from "../../_components/review-bits";
 import { ReviewRail } from "../../_components/review-rail";
+import { PrActions } from "../../_components/pr-actions";
+import {
+  ChecksPanel,
+  CommitsPanel,
+  ConversationPanel,
+  type PrTab,
+} from "../../_components/pr-tabs";
 
 type FileFilter = "all" | "flagged" | "unviewed";
 
@@ -38,13 +45,20 @@ export default function PullRequestPage({
   const { repoId, prNumber } = use(params);
   const { repo, error: repoError } = useRepo(repoId);
   const { pull, error: pullError } = usePull(repo, prNumber);
-  const { entry, review, running, error: reviewError, run } = useReview(repo, repoId, prNumber);
+  const { entry, review, runTrace, mergeGate, running, error: reviewError, run } = useReview(repo, repoId, prNumber);
 
   const [files, setFiles] = useState<PullRequestFile[] | null>(null);
   const [filesError, setFilesError] = useState<string | null>(null);
   const [filter, setFilter] = useState<FileFilter>("all");
   const [viewed, setViewed] = useState<Set<string>>(new Set());
   const [activeFile, setActiveFile] = useState<string | null>(null);
+  /*
+    Conversation, Commits and Checks were missing entirely, so the screen
+    read as "the AI's opinion" rather than "the pull request" and reading
+    the discussion meant opening github.com.
+  */
+  const [tab, setTab] = useState<PrTab>("findings");
+  const [actionNotice, setActionNotice] = useState<string | null>(null);
 
   useEffect(() => {
     if (!repo) return;
@@ -121,8 +135,19 @@ export default function PullRequestPage({
     (acc, f) => ({ add: acc.add + f.additions, del: acc.del + f.deletions }),
     { add: 0, del: 0 },
   );
-  const held = gateHeld(review);
   const counts = review ? countBySeverity(review.findings) : null;
+  /*
+    What the repository's own gate blocks on, not a second opinion derived
+    in the browser — the server enforces the same rule on merge.
+  */
+  const order = ["Low", "Medium", "High", "Critical"];
+  const blockingCount =
+    mergeGate === "none" || !review
+      ? 0
+      : review.findings.filter(
+          (finding) => order.indexOf(String(finding.severity)) >= order.indexOf(mergeGate),
+        ).length;
+  const held = blockingCount > 0;
 
   return (
     <TopbarShell
@@ -147,7 +172,67 @@ export default function PullRequestPage({
         fileCount={files?.length}
       />
 
-      <div className="flex min-h-0 flex-1 flex-col gap-[18px] px-4 py-5 pb-24 sm:px-7 lg:flex-row lg:items-start lg:pb-5">
+      {/*
+        Acting on the pull request without leaving. Every one of these
+        previously meant opening github.com.
+      */}
+      <div className="flex flex-wrap items-center gap-3 border-b border-line bg-surface px-4 py-3 sm:px-7">
+        <PrActions
+          repoId={repoId}
+          pull={pull}
+          gate={mergeGate}
+          blockingCount={blockingCount}
+          onDone={(message) => {
+            setActionNotice(message);
+            window.setTimeout(() => setActionNotice(null), 5000);
+          }}
+        />
+        {actionNotice ? (
+          <span role="status" className="text-[13px] text-pass">
+            {actionNotice}
+          </span>
+        ) : null}
+      </div>
+
+      <div className="flex gap-6 border-b border-line bg-surface px-4 sm:px-7">
+        {(
+          [
+            ["findings", `Findings${review ? ` ${review.findings.length}` : ""}`],
+            ["conversation", "Conversation"],
+            ["commits", "Commits"],
+            ["checks", "Checks"],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            key={value}
+            type="button"
+            onClick={() => setTab(value)}
+            aria-current={tab === value ? "page" : undefined}
+            className={cn(
+              "relative pb-3 text-[14.5px] transition-colors",
+              tab === value ? "font-semibold text-fg" : "text-fg-muted hover:text-fg",
+            )}
+          >
+            {label}
+            {tab === value ? (
+              <span className="absolute inset-x-0 -bottom-px h-0.5 rounded-sm bg-violet-500" />
+            ) : null}
+          </button>
+        ))}
+      </div>
+
+      {tab !== "findings" ? (
+        <div className="px-4 py-5 sm:px-7">
+          {tab === "conversation" ? <ConversationPanel repo={repo} prNumber={prNumber} /> : null}
+          {tab === "commits" ? <CommitsPanel repo={repo} prNumber={prNumber} /> : null}
+          {tab === "checks" ? <ChecksPanel repo={repo} prNumber={prNumber} /> : null}
+        </div>
+      ) : null}
+
+      <div className={cn(
+        "flex min-h-0 flex-1 flex-col gap-[18px] px-4 py-5 pb-24 sm:px-7 lg:flex-row lg:items-start lg:pb-5",
+        tab !== "findings" && "hidden",
+      )}>
         {/* file tree */}
         <aside className="hidden w-[262px] shrink-0 flex-col overflow-hidden rounded-[14px] border border-line bg-surface lg:sticky lg:top-[76px] lg:flex lg:max-h-[calc(100vh-96px)]">
           <div className="border-b border-line-soft px-4 py-3.5">

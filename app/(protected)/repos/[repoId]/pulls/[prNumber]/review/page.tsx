@@ -10,7 +10,7 @@ import { Button } from "@/components/ui/button";
 import { EmptyState, ErrorBanner, LoadingState } from "@/components/ui/feedback";
 import { formatDate, pluralize, timeAgo } from "@/lib/format";
 import {
-  type CachedReview,
+  type ReviewView,
   countBySeverity,
   gateHeld,
   scoreBarClass,
@@ -143,7 +143,7 @@ function ReportHeader({
   running,
   onRerun,
 }: {
-  entry: CachedReview;
+  entry: ReviewView;
   prNumber: string;
   changedFiles?: number;
   running: boolean;
@@ -424,7 +424,7 @@ function FindingArticle({
   );
 }
 
-function ReportRail({ entry, repoId }: { entry: CachedReview; repoId: string }) {
+function ReportRail({ entry, repoId }: { entry: ReviewView; repoId: string }) {
   const { review } = entry;
 
   const byFile = useMemo(() => {
@@ -537,7 +537,7 @@ function RunRow({
 }
 
 function reviewToMarkdown(
-  entry: CachedReview,
+  entry: ReviewView,
   repoName: string,
   prNumber: string,
   title?: string,

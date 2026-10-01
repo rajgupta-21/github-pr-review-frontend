@@ -2,14 +2,11 @@
 
 import { BookMarked, ExternalLink } from "lucide-react";
 import Link from "next/link";
-import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getRepoPulls } from "@/lib/api";
 import { pluralize, timeAgo } from "@/lib/format";
-import { countBySeverity, readCachedReview } from "@/lib/review";
-import type { ConnectedRepo } from "@/lib/types";
+import type { ConnectedRepo, RepoOverviewEntry } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { RepoMeta } from "./repo-meta";
@@ -17,59 +14,29 @@ import { hasWorkflow } from "./use-repositories";
 
 const COLUMNS = "md:grid-cols-[minmax(0,1fr)_120px_130px_176px_130px_112px]";
 
-type PullSummary =
-  | { state: "loading" }
-  | { state: "error" }
-  | { state: "done"; open: number; critical: number; high: number };
-
-/** Open PR count for one row, fetched lazily; cached AI reviews add the worst-severity pill. */
-function useOpenPulls(repo: ConnectedRepo): PullSummary {
-  const [summary, setSummary] = useState<PullSummary>({ state: "loading" });
-
-  useEffect(() => {
-    let cancelled = false;
-    getRepoPulls(repo)
-      .then((pulls) => {
-        if (cancelled) return;
-        const open = pulls.filter((pr) => pr.state === "open");
-        let critical = 0;
-        let high = 0;
-        for (const pr of open) {
-          const cached = readCachedReview(repo.repoId, pr.githubPrNumber);
-          if (!cached) continue;
-          const counts = countBySeverity(cached.review.findings);
-          critical += counts.critical;
-          high += counts.high;
-        }
-        setSummary({ state: "done", open: open.length, critical, high });
-      })
-      .catch(() => !cancelled && setSummary({ state: "error" }));
-    return () => {
-      cancelled = true;
-    };
-  }, [repo]);
-
-  return summary;
-}
-
-function OpenPulls({ repo }: { repo: ConnectedRepo }) {
-  const summary = useOpenPulls(repo);
-  if (summary.state === "loading") {
-    return <span className="inline-block h-4 w-6 animate-pulse rounded bg-surface-hover" aria-label="Loading" />;
+/*
+  Open PR counts and finding totals now arrive with the page, from
+  /repo/overview. This component used to make one GitHub request per row
+  and read severities from sessionStorage, so the column was empty on a
+  fresh browser and slow on a large account.
+*/
+function OpenPulls({ entry }: { entry?: RepoOverviewEntry }) {
+  if (!entry) {
+    return <span className="text-[13.5px] text-fg-faint">—</span>;
   }
-  if (summary.state === "error") {
-    return <span className="text-[13.5px] text-fg-faint">Unavailable</span>;
-  }
+
+  const { critical, high } = entry.openFindings;
+
   return (
     <div className="flex items-center gap-2">
-      <span className="font-mono text-[15px] text-fg">{summary.open}</span>
-      {summary.critical > 0 ? (
+      <span className="font-mono text-[15px] text-fg">{entry.reviewedPrCount}</span>
+      {critical > 0 ? (
         <Badge tone="critical" size="sm" className="text-[11.5px]">
-          {summary.critical} crit
+          {critical} crit
         </Badge>
-      ) : summary.high > 0 ? (
+      ) : high > 0 ? (
         <Badge tone="high" size="sm" className="text-[11.5px]">
-          {summary.high} high
+          {high} high
         </Badge>
       ) : null}
     </div>
@@ -80,7 +47,15 @@ function CellLabel({ children }: { children: React.ReactNode }) {
   return <span className="eyebrow w-28 shrink-0 md:hidden">{children}</span>;
 }
 
-function RepoRow({ repo, last }: { repo: ConnectedRepo; last: boolean }) {
+function RepoRow({
+  repo,
+  entry,
+  last,
+}: {
+  repo: ConnectedRepo;
+  entry?: RepoOverviewEntry;
+  last: boolean;
+}) {
   const configured = hasWorkflow(repo);
   const nodes = repo.workflow?.nodes?.length ?? 0;
 
@@ -119,7 +94,7 @@ function RepoRow({ repo, last }: { repo: ConnectedRepo; last: boolean }) {
 
       <div className="flex items-center">
         <CellLabel>Open PRs</CellLabel>
-        <OpenPulls repo={repo} />
+        <OpenPulls entry={entry} />
       </div>
 
       <div className="flex items-center">
@@ -190,7 +165,14 @@ function RepoRow({ repo, last }: { repo: ConnectedRepo; last: boolean }) {
   );
 }
 
-export function ConnectedTable({ repos }: { repos: ConnectedRepo[] }) {
+export function ConnectedTable({
+  repos,
+  overview,
+}: {
+  repos: ConnectedRepo[];
+  /** Health and finding counts from /repo/overview, keyed by GitHub repo id. */
+  overview?: Record<number, RepoOverviewEntry>;
+}) {
   return (
     <div className="overflow-hidden rounded-xl border border-line bg-surface">
       <div
@@ -207,7 +189,12 @@ export function ConnectedTable({ repos }: { repos: ConnectedRepo[] }) {
         <span className="sr-only">Actions</span>
       </div>
       {repos.map((repo, index) => (
-        <RepoRow key={repo._id} repo={repo} last={index === repos.length - 1} />
+        <RepoRow
+          key={repo._id}
+          repo={repo}
+          entry={overview?.[repo.repoId]}
+          last={index === repos.length - 1}
+        />
       ))}
     </div>
   );

@@ -8,7 +8,7 @@ import { ErrorBanner } from "@/components/ui/feedback";
 import { FindingCard } from "@/components/ui/finding-card";
 import { Label, Textarea } from "@/components/ui/input";
 import { timeAgo } from "@/lib/format";
-import type { CachedReview } from "@/lib/review";
+import type { ReviewView } from "@/lib/review";
 import { sortFindings } from "@/lib/review";
 
 import {
@@ -67,7 +67,7 @@ export function ReviewRail({
   onRun,
   reportHref,
 }: {
-  entry: CachedReview | null;
+  entry: ReviewView | null;
   running: boolean;
   error: string | null;
   onRun: (context?: string) => void;
@@ -150,7 +150,7 @@ export function ReviewRail({
   );
 }
 
-function ReviewScores({ review }: { review: CachedReview["review"] }) {
+function ReviewScores({ review }: { review: ReviewView["review"] }) {
   const scores = reviewScores(review);
   return (
     <>
