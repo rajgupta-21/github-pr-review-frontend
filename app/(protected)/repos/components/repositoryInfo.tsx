@@ -363,9 +363,13 @@ const RepositoryInfo = ({ repoId }: { repoId: number }) => {
                       <button
                         className="px-4 py-2 bg-[#5B36E8] text-white rounded-lg hover:opacity-90 cursor-pointer"
                         onClick={() => {
+                          // This has to be the repository owner, not the PR
+                          // author — every backend call uses it as the GitHub
+                          // owner. Sending pr.author.login 404s on any PR
+                          // raised by someone who does not own the repo.
                           router.push(
                             `/repos/pr/${pr.githubPrNumber}?userName=${encodeURIComponent(
-                              pr.author.login,
+                              repo.owner,
                             )}&repoName=${encodeURIComponent(repo.name)}&userId=${encodeURIComponent(
                               repo.userId,
                             )}`,
