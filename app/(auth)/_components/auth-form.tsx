@@ -96,6 +96,18 @@ export function AuthForm({ mode }: { mode: Mode }) {
           Continue with GitHub
         </Button>
 
+        {/*
+          We ask for the `repo` scope — read and write on every repository.
+          Saying nothing about that at the moment of consent is both a trust
+          problem and a compliance problem for any company that would pay us.
+        */}
+        <p className="mt-3 text-[12.5px] leading-[1.55] text-fg-subtle">
+          We ask for repository access so we can read pull request diffs and post reviews.
+          Diffs are sent to our review model and are not stored after a review completes.
+          You choose which repositories to connect, and can disconnect any of them at any
+          time.
+        </p>
+
         <div className="my-[26px] flex items-center gap-3.5">
           <span aria-hidden="true" className="h-px flex-1 bg-[#E3E1DC]" />
           <span className="text-[13px] text-fg-faint">or with email</span>

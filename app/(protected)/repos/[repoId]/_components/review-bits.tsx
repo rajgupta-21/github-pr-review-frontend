@@ -80,12 +80,18 @@ export function ScoreBar({ label, score }: { label: string; score: number | null
   );
 }
 
+/*
+  Scores arrive already on 0–100 — useReview normalises once at the
+  boundary (storedToView / liveToView). Running toPercent again here was a
+  real bug: a genuinely terrible score of 8 was multiplied by ten and shown
+  as 80, i.e. the worst code looked fine.
+*/
 export function reviewScores(review: ReviewResult) {
   return {
-    overall: toPercent(review.overallScore),
-    security: toPercent(review.securityScore),
-    performance: toPercent(review.performanceScore),
-    quality: toPercent(review.qualityScore),
+    overall: review.overallScore ?? null,
+    security: review.securityScore ?? null,
+    performance: review.performanceScore ?? null,
+    quality: review.qualityScore ?? null,
   };
 }
 

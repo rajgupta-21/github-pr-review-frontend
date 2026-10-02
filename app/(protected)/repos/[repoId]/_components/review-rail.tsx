@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ErrorBanner } from "@/components/ui/feedback";
@@ -9,7 +9,11 @@ import { FindingCard } from "@/components/ui/finding-card";
 import { Label, Textarea } from "@/components/ui/input";
 import { timeAgo } from "@/lib/format";
 import type { ReviewView } from "@/lib/review";
-import { sortFindings } from "@/lib/review";
+import { scoreBand, scoreDrivers, SCORE_SCALE_HELP, sortFindings } from "@/lib/review";
+import { countBySeverity } from "@/lib/review";
+import { InfoHint, Tooltip } from "@/components/ui/tooltip";
+
+import { ReviewProgress } from "./review-progress";
 
 import {
   BotMark,
@@ -74,7 +78,13 @@ export function ReviewRail({
   reportHref: string;
 }) {
   const [showRerun, setShowRerun] = useState(false);
+  const [startedAt, setStartedAt] = useState(() => Date.now());
   const review = entry?.review;
+
+  // Reset the clock each time a run begins
+  useEffect(() => {
+    if (running) setStartedAt(Date.now());
+  }, [running]);
 
   return (
     <aside className="flex w-full shrink-0 flex-col gap-3.5 lg:w-[320px]">
@@ -96,6 +106,16 @@ export function ReviewRail({
         </div>
 
         {error ? <ErrorBanner className="mt-4">{error}</ErrorBanner> : null}
+
+        {/*
+          A review takes ~30s and showed only a spinner — no stage, no
+          estimate, nothing separating "working" from "stuck".
+        */}
+        {running ? (
+          <div className="mt-4">
+            <ReviewProgress startedAt={startedAt} />
+          </div>
+        ) : null}
 
         {review ? (
           <>
@@ -157,10 +177,21 @@ function ReviewScores({ review }: { review: ReviewView["review"] }) {
       <div className="mt-[18px] flex items-center gap-4">
         <ScoreRing score={scores.overall} />
         <div>
-          <div className="font-display text-[34px] font-bold tracking-[-0.03em] text-fg">
-            {scores.overall ?? "—"}
+          <div className="flex items-baseline gap-1">
+            <span className="font-display text-[34px] font-bold tracking-[-0.03em] text-fg">
+              {scores.overall ?? "—"}
+            </span>
+            {/* The denominator was never shown, so the number meant nothing */}
+            <span className="text-[14px] text-fg-faint">/100</span>
           </div>
-          <div className="text-[13px] text-fg-muted">Overall score</div>
+          <div className="flex items-center gap-1.5 text-[13px] text-fg-muted">
+            {scoreBand(scores.overall) ?? "Overall score"}
+            <InfoHint label="How is this scored?">
+              {SCORE_SCALE_HELP}
+              <br />
+              {scoreDrivers(countBySeverity(review.findings))}
+            </InfoHint>
+          </div>
           <div className="mt-[7px]">
             <RecommendationBadge review={review} size="md" />
           </div>

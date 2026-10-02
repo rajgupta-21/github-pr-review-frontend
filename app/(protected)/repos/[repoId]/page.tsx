@@ -11,6 +11,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { use, useEffect, useMemo, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 
 import { TopbarShell } from "@/components/shell/app-shell";
 import { Badge } from "@/components/ui/badge";
@@ -24,6 +25,7 @@ import { scoreTextClass } from "@/lib/review";
 import type { ConnectedRepo, PullRequest, RepoReviewSummary } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+import { HealthTrend } from "./_components/health-trend";
 import { useRepo } from "./_components/hooks";
 
 type PrState = "open" | "merged" | "closed";
@@ -48,8 +50,21 @@ export default function RepoDetailPage({ params }: { params: Promise<{ repoId: s
 
   const [pulls, setPulls] = useState<PullRequest[] | null>(null);
   const [pullsError, setPullsError] = useState<string | null>(null);
-  const [filter, setFilter] = useState<PrState>("open");
-  const [author, setAuthor] = useState("all");
+  /*
+    Filter state lives in the URL. It used to reset to "open" every time you
+    opened a pull request and came back, and the view could not be shared.
+  */
+  const router = useRouter();
+  const search = useSearchParams();
+  const filter = (search.get("state") as PrState) || "open";
+  const author = search.get("author") || "all";
+
+  const setParam = (key: string, value: string) => {
+    const next = new URLSearchParams(search.toString());
+    if (!value || value === "all" || (key === "state" && value === "open")) next.delete(key);
+    else next.set(key, value);
+    router.replace(`/repos/${repoId}${next.toString() ? `?${next}` : ""}`, { scroll: false });
+  };
 
   useEffect(() => {
     if (!repo) return;
@@ -136,7 +151,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ repoId: s
             <Segmented
               label="Pull request state"
               value={filter}
-              onChange={setFilter}
+              onChange={(value) => setParam("state", value)}
               options={[
                 { value: "open", label: `Open ${counts.open}` },
                 { value: "merged", label: `Merged ${counts.merged}` },
@@ -150,7 +165,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ repoId: s
             <Select
               id="author-filter"
               value={author}
-              onChange={(e) => setAuthor(e.target.value)}
+              onChange={(e) => setParam("author", e.target.value)}
               className="w-auto py-2 text-[13.5px]"
             >
               <option value="all">Author: Anyone</option>
@@ -175,7 +190,7 @@ export default function RepoDetailPage({ params }: { params: Promise<{ repoId: s
                 title={`No ${filter} pull requests`}
                 description={
                   author === "all"
-                    ? "When someone opens a pull request on this repository it shows up here."
+                    ? "When someone opens a pull request here, Mergegate reviews it automatically and the result appears on this list."
                     : `Nothing ${filter} by ${author}.`
                 }
               />
@@ -193,7 +208,11 @@ export default function RepoDetailPage({ params }: { params: Promise<{ repoId: s
           </div>
         </section>
 
-        <RepoRail repo={repo} onRepoChange={setRepo} />
+        {/* "Is this repo getting better?" — previously unanswerable in the UI */}
+        <div className="flex w-full shrink-0 flex-col gap-3.5 lg:w-[320px]">
+          <HealthTrend repoId={repoId} />
+          <RepoRail repo={repo} onRepoChange={setRepo} />
+        </div>
       </div>
     </TopbarShell>
   );

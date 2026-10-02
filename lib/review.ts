@@ -80,6 +80,8 @@ export function isApprove(review: ReviewResult | null | undefined) {
   toPercent() again, which would multiply a genuinely low score by ten.
 */
 export interface ReviewView {
+  /** Stored review id — needed to attach feedback to a finding. */
+  reviewId?: string;
   review: ReviewResult;
   ranAt: string;
   durationMs?: number;
@@ -96,6 +98,7 @@ export interface ReviewView {
  */
 export function storedToView(stored: StoredReview): ReviewView {
   return {
+    reviewId: stored._id,
     review: {
       summary: stored.summary ?? "",
       overallScore: stored.overallScore,

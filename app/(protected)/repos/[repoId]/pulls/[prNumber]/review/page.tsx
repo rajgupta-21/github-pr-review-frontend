@@ -2,8 +2,9 @@
 
 import { CheckCircle2, ChevronDown, ChevronUp, Download } from "lucide-react";
 import Link from "next/link";
-import { use, useMemo, useState } from "react";
+import { use, useEffect, useMemo, useState } from "react";
 
+import { getFindingFeedback } from "@/lib/api";
 import { TopbarShell } from "@/components/shell/app-shell";
 import { Badge, SeverityBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -23,6 +24,10 @@ import type { ReviewFinding, ReviewResult } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 import { usePull, useRepo, useReview } from "../../../_components/hooks";
+import { FindingFeedback } from "../../../_components/finding-feedback";
+import { Tooltip } from "@/components/ui/tooltip";
+import { SEVERITY_DEFINITIONS } from "@/lib/review";
+import type { Severity } from "@/lib/types";
 import {
   BotMark,
   formatDuration,
@@ -44,6 +49,27 @@ export default function ReviewReportPage({
   const { repo, error: repoError } = useRepo(repoId);
   const { pull } = usePull(repo, prNumber);
   const { entry, review, running, error, run } = useReview(repo, repoId, prNumber);
+
+  /*
+    Verdicts this user has already given, so the buttons show their current
+    state instead of resetting on every visit.
+  */
+  const [feedback, setFeedback] = useState<
+    Record<string, { verdict: string; reason?: string }>
+  >({});
+  const [feedbackNote, setFeedbackNote] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!entry?.reviewId) return;
+    let cancelled = false;
+    getFindingFeedback(entry.reviewId)
+      .then((data) => !cancelled && setFeedback(data))
+      // Feedback is an accelerator, never a blocker — fail quietly
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [entry?.reviewId]);
   const [filter, setFilter] = useState<Filter>("all");
 
   const prHref = `/repos/${repoId}/pulls/${prNumber}`;
@@ -128,8 +154,26 @@ export default function ReviewReportPage({
         </div>
       ) : null}
 
+      {feedbackNote ? (
+        <div role="status" className="mx-4 mt-4 rounded-xl border border-[#C9E4D6] bg-[#F3FAF6] px-4 py-2.5 text-[13.5px] text-pass sm:mx-7">
+          {feedbackNote}
+        </div>
+      ) : null}
+
       <div className="flex flex-col gap-[18px] px-4 py-5 sm:px-7 lg:flex-row lg:items-start">
-        <Findings review={review} filter={filter} onFilter={setFilter} prHref={prHref} />
+        <Findings
+          review={review}
+          reviewId={entry.reviewId}
+          feedback={feedback}
+          onFeedback={(index, verdict, reason, note) => {
+            setFeedback((prev) => ({ ...prev, [String(index)]: { verdict, reason } }));
+            setFeedbackNote(note);
+            window.setTimeout(() => setFeedbackNote(null), 5000);
+          }}
+          filter={filter}
+          onFilter={setFilter}
+          prHref={prHref}
+        />
         <ReportRail entry={entry} repoId={repoId} />
       </div>
     </TopbarShell>
@@ -244,15 +288,26 @@ function ReportHeader({
 
 function Findings({
   review,
+  reviewId,
+  feedback,
+  onFeedback,
   filter,
   onFilter,
   prHref,
 }: {
   review: ReviewResult;
+  reviewId?: string;
+  feedback: Record<string, { verdict: string; reason?: string }>;
+  onFeedback: (index: number, verdict: string, reason: string | undefined, note: string) => void;
   filter: Filter;
   onFilter: (filter: Filter) => void;
   prHref: string;
 }) {
+  /*
+    Sorting reorders the list, but feedback is keyed by a finding's position
+    in the stored review — so the original index travels with it.
+  */
+  const indexed = review.findings.map((finding, index) => ({ finding, index }));
   const findings = sortFindings(review.findings);
   const counts = countBySeverity(findings);
   const visible =
@@ -287,14 +342,23 @@ function Findings({
           No {filter} findings.
         </div>
       ) : (
-        visible.map((finding, index) => (
-          <FindingArticle
-            key={`${finding.file}-${index}`}
-            finding={finding}
-            prHref={prHref}
-            defaultOpen={["critical", "high"].includes(severityTone(finding.severity))}
-          />
-        ))
+        visible.map((finding, index) => {
+          const originalIndex =
+            indexed.find((item) => item.finding === finding)?.index ?? index;
+
+          return (
+            <FindingArticle
+              key={`${finding.file}-${index}`}
+              finding={finding}
+              prHref={prHref}
+              reviewId={reviewId}
+              findingIndex={originalIndex}
+              feedback={feedback[String(originalIndex)]}
+              onFeedback={onFeedback}
+              defaultOpen={["critical", "high"].includes(severityTone(finding.severity))}
+            />
+          );
+        })
       )}
     </section>
   );
@@ -331,10 +395,18 @@ const STRIPE: Record<SeverityTone, string> = SEVERITY_DOT as Record<SeverityTone
 function FindingArticle({
   finding,
   prHref,
+  reviewId,
+  findingIndex,
+  feedback,
+  onFeedback,
   defaultOpen,
 }: {
   finding: ReviewFinding;
   prHref: string;
+  reviewId?: string;
+  findingIndex: number;
+  feedback?: { verdict: string; reason?: string };
+  onFeedback: (index: number, verdict: string, reason: string | undefined, note: string) => void;
   defaultOpen: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
@@ -371,12 +443,26 @@ function FindingArticle({
   }
 
   return (
-    <article className="flex overflow-hidden rounded-[15px] border border-line bg-surface">
+    <article
+      id={`finding-${findingIndex}`}
+      className="flex scroll-mt-24 overflow-hidden rounded-[15px] border border-line bg-surface target:border-violet-400 target:ring-2 target:ring-violet-200"
+    >
       <span aria-hidden="true" className={cn("w-1 shrink-0", STRIPE[tone])} />
       <div className="min-w-0 flex-1 px-5 py-[18px]">
         <div className="flex flex-wrap items-center gap-2.5">
-          <SeverityBadge severity={finding.severity} />
+          {/* Severity now carries its definition instead of being asserted */}
+          <Tooltip content={SEVERITY_DEFINITIONS[finding.severity as Severity] ?? ""}>
+            <SeverityBadge severity={finding.severity} />
+          </Tooltip>
           {fileLink}
+          {/* A finding can now be linked to and sent to a colleague */}
+          <a
+            href={`#finding-${findingIndex}`}
+            aria-label="Link to this finding"
+            className="text-[12px] text-fg-faint hover:text-violet-600"
+          >
+            #
+          </a>
           <div className="flex-1" />
           <button
             type="button"
@@ -408,7 +494,7 @@ function FindingArticle({
             <p className="mt-2 text-sm leading-[1.62] text-fg-3">{finding.suggestion || "—"}</p>
           </div>
         </div>
-        <div className="mt-4">
+        <div className="mt-4 flex flex-wrap items-center gap-3">
           <Button asChild variant={tone === "critical" ? "primary" : "tertiary"} size="sm">
             <Link
               href={`${prHref}${
@@ -418,6 +504,24 @@ function FindingArticle({
               Open in diff
             </Link>
           </Button>
+
+          <div className="flex-1" />
+
+          {/*
+            Disputing a finding. Without this the model is correct by
+            construction, and the first confidently wrong finding leaves the
+            user with nothing to do but stop trusting the tool.
+          */}
+          {reviewId ? (
+            <FindingFeedback
+              reviewId={reviewId}
+              findingIndex={findingIndex}
+              current={feedback}
+              onRecorded={(verdict, reason, note) =>
+                onFeedback(findingIndex, verdict, reason, note)
+              }
+            />
+          ) : null}
         </div>
       </div>
     </article>

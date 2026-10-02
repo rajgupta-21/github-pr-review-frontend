@@ -27,6 +27,11 @@ function matches(query: string, ...fields: Array<string | null | undefined>) {
 
 export default function RepositoriesPage() {
   const repos = useRepositories();
+  /*
+    A connected repository with no workflow does nothing, and the UI just
+    said "Connected". Point at the next step the moment it happens.
+  */
+  const [justConnected, setJustConnected] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("connected");
   const [query, setQuery] = useState("");
   const [language, setLanguage] = useState("all");
@@ -152,6 +157,21 @@ export default function RepositoriesPage() {
           </button>
         </ErrorBanner>
       ) : null}
+      {justConnected ? (
+        <div
+          role="status"
+          className="mb-4 flex flex-wrap items-center gap-3 rounded-xl border border-violet-200 bg-violet-50/50 px-4 py-3"
+        >
+          <span className="text-[14px] text-fg">
+            <strong className="font-semibold">{justConnected}</strong> is connected — but it will
+            not review anything until it has a workflow.
+          </span>
+          <Button asChild variant="primary" size="sm" className="ml-auto">
+            <Link href="/workflow">Give it a workflow</Link>
+          </Button>
+        </div>
+      ) : null}
+
       {repos.connectError ? <ErrorBanner className="mb-4">{repos.connectError}</ErrorBanner> : null}
 
       <div className="flex flex-wrap items-center gap-2.5">
@@ -247,7 +267,10 @@ export default function RepositoriesPage() {
             <AvailableList
               repos={availableRows}
               connecting={repos.connecting}
-              onConnect={repos.connect}
+              onConnect={async (repo) => {
+              await repos.connect(repo);
+              setJustConnected(repo.fullName);
+            }}
             />
           )
         ) : connectedRows.length === 0 ? (
